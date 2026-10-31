@@ -3,6 +3,7 @@ package org.linlinjava.litemall.core.config;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.hibernate.validator.internal.engine.path.PathImpl;
+import org.linlinjava.litemall.core.exception.BusinessException;
 import org.linlinjava.litemall.core.util.ResponseUtil;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -64,6 +65,13 @@ public class GlobalExceptionHandler {
             }
         }
         return ResponseUtil.badArgumentValue();
+    }
+
+    @ExceptionHandler(BusinessException.class)
+    @ResponseBody
+    public Object businessHandler(BusinessException e) {
+        logger.warn(e.getMessage());
+        return ResponseUtil.fail(e.getErrno(), e.getMessage());
     }
 
     @ExceptionHandler(Exception.class)

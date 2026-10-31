@@ -12,6 +12,7 @@ import com.github.binarywang.wxpay.service.WxPayService;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.linlinjava.litemall.core.exception.BusinessException;
 import org.linlinjava.litemall.core.express.ExpressService;
 import org.linlinjava.litemall.core.express.dao.ExpressInfo;
 import org.linlinjava.litemall.core.notify.NotifyService;
@@ -491,14 +492,9 @@ public class WxOrderService {
 
     private void reduceStock(List<LitemallCart> goodsList) {
         for (LitemallCart checkGoods : goodsList) {
-            Integer productId = checkGoods.getProductId();
-            LitemallGoodsProduct product = productService.findById(productId);
-            int remainNumber = product.getNumber() - checkGoods.getNumber();
-            if (remainNumber < 0) {
-                throw new RuntimeException("下单的商品货品数量大于库存量");
-            }
-            if (productService.reduceStock(productId, checkGoods.getNumber()) == 0) {
-                throw new RuntimeException("商品货品库存减少失败");
+            // 不再先查库存：条件更新返回 0 行就说明库存不足，避免查询与扣减之间的竞争
+            if (productService.reduceStock(checkGoods.getProductId(), checkGoods.getNumber()) == 0) {
+                throw new BusinessException(711, "库存不足");
             }
         }
     }
