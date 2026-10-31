@@ -52,3 +52,8 @@ Servers
 .metadata
 upload
 gen_code
+
+# lab
+.scannerwork/
+/litemall/
+*.bak
