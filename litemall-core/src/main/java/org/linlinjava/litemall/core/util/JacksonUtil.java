@@ -60,6 +60,23 @@ public class JacksonUtil {
         return null;
     }
 
+    /**
+     * 只接受 JSON 整数，字符串、布尔、对象都返回 null
+     */
+    public static Integer parseStrictInteger(String body, String field) {
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            JsonNode node = mapper.readTree(body);
+            JsonNode leaf = node == null ? null : node.get(field);
+            if (leaf != null && leaf.isIntegralNumber()) {
+                return leaf.asInt();
+            }
+        } catch (IOException e) {
+            logger.error(e.getMessage(), e);
+        }
+        return null;
+    }
+
     public static List<Integer> parseIntegerList(String body, String field) {
         ObjectMapper mapper = new ObjectMapper();
         JsonNode node;

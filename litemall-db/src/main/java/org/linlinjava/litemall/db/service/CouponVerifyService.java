@@ -38,7 +38,8 @@ public class CouponVerifyService {
         LitemallCouponUser couponUser = couponUserService.findById(userCouponId);
         if (couponUser == null) {
             couponUser = couponUserService.queryOne(userId, couponId);
-        } else if (!couponId.equals(couponUser.getCouponId())) {
+        } else if (!couponId.equals(couponUser.getCouponId())
+                || !userId.equals(couponUser.getUserId())) {
             return null;
         }
 

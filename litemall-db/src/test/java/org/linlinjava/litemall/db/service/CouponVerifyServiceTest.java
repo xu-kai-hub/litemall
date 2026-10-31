@@ -138,6 +138,20 @@ class CouponVerifyServiceTest {
     }
 
     @Test
+    void testCheckCoupon_otherUsersCouponRejected() {
+        LitemallCoupon coupon = createCoupon(CouponConstant.TIME_TYPE_TIME, null,
+                LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(1),
+                CouponConstant.GOODS_TYPE_ALL, new Integer[]{}, new BigDecimal("100"), CouponConstant.STATUS_NORMAL);
+        when(couponService.findById(1)).thenReturn(coupon);
+        when(couponUserService.findById(1)).thenReturn(createCouponUser(1, LocalDateTime.now()));
+
+        LitemallCoupon result = couponVerifyService.checkCoupon(2, 1, 1, new BigDecimal("150"),
+                Collections.emptyList());
+
+        assertNull(result);
+    }
+
+    @Test
     void testCheckCoupon_expiredByTime() {
         LitemallCoupon coupon = createCoupon(CouponConstant.TIME_TYPE_TIME, null,
                 LocalDateTime.now().minusDays(2), LocalDateTime.now().minusDays(1),

@@ -259,6 +259,13 @@ public class WxOrderService {
             return ResponseUtil.badArgument();
         }
         SubmitParam param = SubmitParam.parse(body);
+        if (param == null) {
+            return ResponseUtil.badArgument();
+        }
+        // 订单留言在库中为 varchar(255)，超长直接按参数错误拒绝，不能落到 SQL 层
+        if (param.message != null && param.message.length() > 255) {
+            return ResponseUtil.badArgumentValue();
+        }
 
         // 团购规则只查一次，校验通过后复用同一条记录
         LitemallGrouponRules grouponRules = grouponRulesService.findById(param.grouponRulesId);
@@ -301,13 +308,13 @@ public class WxOrderService {
 
         private static SubmitParam parse(String body) {
             SubmitParam param = new SubmitParam();
-            param.cartId = JacksonUtil.parseInteger(body, "cartId");
-            param.addressId = JacksonUtil.parseInteger(body, "addressId");
-            param.couponId = JacksonUtil.parseInteger(body, "couponId");
-            param.userCouponId = JacksonUtil.parseInteger(body, "userCouponId");
+            param.cartId = JacksonUtil.parseStrictInteger(body, "cartId");
+            param.addressId = JacksonUtil.parseStrictInteger(body, "addressId");
+            param.couponId = JacksonUtil.parseStrictInteger(body, "couponId");
+            param.userCouponId = JacksonUtil.parseStrictInteger(body, "userCouponId");
             param.message = JacksonUtil.parseString(body, "message");
-            param.grouponRulesId = JacksonUtil.parseInteger(body, "grouponRulesId");
-            param.grouponLinkId = JacksonUtil.parseInteger(body, KEY_GROUPON_LINK_ID);
+            param.grouponRulesId = JacksonUtil.parseStrictInteger(body, "grouponRulesId");
+            param.grouponLinkId = JacksonUtil.parseStrictInteger(body, KEY_GROUPON_LINK_ID);
             return param;
         }
     }
@@ -356,6 +363,9 @@ public class WxOrderService {
         if (grouponService.hasJoin(userId, grouponLinkId)) {
             return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
         }
+        if (grouponService.queryById(grouponLinkId) == null) {
+            return ResponseUtil.badArgument();
+        }
         LitemallGroupon groupon = grouponService.queryById(userId, grouponLinkId);
         if (groupon != null && groupon.getCreatorUserId().equals(userId)) {
             return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
@@ -375,8 +385,13 @@ public class WxOrderService {
         if (cartId.equals(0)) {
             return cartService.queryByUidAndChecked(userId);
         }
+        // 必须按 userId 查，否则可以拿别人的 cartId 下单；查不到时返回空列表，由调用方按参数错误处理
+        LitemallCart cart = cartService.findById(userId, cartId);
+        if (cart == null) {
+            return new ArrayList<>();
+        }
         List<LitemallCart> goodsList = new ArrayList<>(1);
-        goodsList.add(cartService.findById(cartId));
+        goodsList.add(cart);
         return goodsList;
     }
 
@@ -496,7 +511,7 @@ public class WxOrderService {
         LitemallCouponUser couponUser = param.userCouponId == null
                 ? couponUserService.queryOne(userId, param.couponId)
                 : couponUserService.findById(param.userCouponId);
-        if (couponUser == null) {
+        if (couponUser == null || !userId.equals(couponUser.getUserId())) {
             throw new RuntimeException("优惠券记录不存在");
         }
         couponUser.setStatus(CouponUserConstant.STATUS_USED);
