@@ -282,7 +282,7 @@ public class WxOrderService {
         saveOrderGoods(order, price.goodsList);
         clearCart(userId, param.cartId);
         reduceStock(price.goodsList);
-        useCoupon(param, order.getId());
+        useCoupon(userId, param, order.getId());
         Integer grouponLinkId = createGroupon(param, userId, order.getId());
         boolean payed = payZeroOrder(order);
 
@@ -488,11 +488,17 @@ public class WxOrderService {
         }
     }
 
-    private void useCoupon(SubmitParam param, Integer orderId) {
+    private void useCoupon(Integer userId, SubmitParam param, Integer orderId) {
         if (param.couponId == 0 || param.couponId == -1) {
             return;
         }
-        LitemallCouponUser couponUser = couponUserService.findById(param.userCouponId);
+        // 前端可能只传 couponId，checkCoupon 已经按 userId+couponId 找到可用券，这里做同样的回退
+        LitemallCouponUser couponUser = param.userCouponId == null
+                ? couponUserService.queryOne(userId, param.couponId)
+                : couponUserService.findById(param.userCouponId);
+        if (couponUser == null) {
+            throw new RuntimeException("优惠券记录不存在");
+        }
         couponUser.setStatus(CouponUserConstant.STATUS_USED);
         couponUser.setUsedTime(LocalDateTime.now());
         couponUser.setOrderId(orderId);
