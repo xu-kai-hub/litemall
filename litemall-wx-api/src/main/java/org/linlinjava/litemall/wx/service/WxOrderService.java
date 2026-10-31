@@ -67,6 +67,12 @@ import static org.linlinjava.litemall.wx.util.WxResponseCode.*;
  */
 @Service
 public class WxOrderService {
+    private static final String KEY_EXPRESS_INFO = "expressInfo";
+    private static final String KEY_GROUPON_LINK_ID = "grouponLinkId";
+    private static final String KEY_ORDER_ID = "orderId";
+    private static final String MSG_UPDATE_FAILED = "更新数据已失效";
+    private static final String MSG_ORDER_CANNOT_PAY = "订单不能支付";
+
     private final Log logger = LogFactory.getLog(WxOrderService.class);
 
     @Autowired
@@ -217,14 +223,14 @@ public class WxOrderService {
         if (order.getOrderStatus().equals(OrderUtil.STATUS_SHIP)) {
             ExpressInfo ei = expressService.getExpressInfo(order.getShipChannel(), order.getShipSn());
             if(ei == null){
-                result.put("expressInfo", new ArrayList<>());
+                result.put(KEY_EXPRESS_INFO, new ArrayList<>());
             }
             else {
-                result.put("expressInfo", ei);
+                result.put(KEY_EXPRESS_INFO, ei);
             }
         }
         else{
-            result.put("expressInfo", new ArrayList<>());
+            result.put(KEY_EXPRESS_INFO, new ArrayList<>());
         }
 
         return ResponseUtil.ok(result);
@@ -252,154 +258,199 @@ public class WxOrderService {
         if (body == null) {
             return ResponseUtil.badArgument();
         }
-        Integer cartId = JacksonUtil.parseInteger(body, "cartId");
-        Integer addressId = JacksonUtil.parseInteger(body, "addressId");
-        Integer couponId = JacksonUtil.parseInteger(body, "couponId");
-        Integer userCouponId = JacksonUtil.parseInteger(body, "userCouponId");
-        String message = JacksonUtil.parseString(body, "message");
-        Integer grouponRulesId = JacksonUtil.parseInteger(body, "grouponRulesId");
-        Integer grouponLinkId = JacksonUtil.parseInteger(body, "grouponLinkId");
+        SubmitParam param = SubmitParam.parse(body);
 
-        //如果是团购项目,验证活动是否有效
-        if (grouponRulesId != null && grouponRulesId > 0) {
-            LitemallGrouponRules rules = grouponRulesService.findById(grouponRulesId);
-            //找不到记录
-            if (rules == null) {
-                return ResponseUtil.badArgument();
-            }
-            //团购规则已经过期
-            if (rules.getStatus().equals(GrouponConstant.RULE_STATUS_DOWN_EXPIRE)) {
-                return ResponseUtil.fail(GROUPON_EXPIRED, "团购已过期!");
-            }
-            //团购规则已经下线
-            if (rules.getStatus().equals(GrouponConstant.RULE_STATUS_DOWN_ADMIN)) {
-                return ResponseUtil.fail(GROUPON_OFFLINE, "团购已下线!");
-            }
-
-            if (grouponLinkId != null && grouponLinkId > 0) {
-                //团购人数已满
-                if(grouponService.countGroupon(grouponLinkId) >= (rules.getDiscountMember() - 1)){
-                    return ResponseUtil.fail(GROUPON_FULL, "团购活动人数已满!");
-                }
-                // NOTE
-                // 这里业务方面允许用户多次开团，以及多次参团，
-                // 但是会限制以下两点：
-                // （1）不允许参加已经加入的团购
-                if(grouponService.hasJoin(userId, grouponLinkId)){
-                    return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
-                }
-                // （2）不允许参加自己开团的团购
-                LitemallGroupon groupon = grouponService.queryById(userId, grouponLinkId);
-                // if(groupon.getCreatorUserId().equals(userId)){
-                //     return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
-                // }
-                if(groupon!=null) {
-	                if(groupon.getCreatorUserId().equals(userId)){
-	                    return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
-	                }
-                }
-            }
+        // 团购规则只查一次，校验通过后复用同一条记录
+        LitemallGrouponRules grouponRules = grouponRulesService.findById(param.grouponRulesId);
+        Object grouponError = checkGroupon(param, grouponRules, userId);
+        if (grouponError != null) {
+            return grouponError;
         }
 
-        if (cartId == null || addressId == null || couponId == null) {
+        LitemallAddress address = queryAddress(userId, param);
+        if (address == null) {
             return ResponseUtil.badArgument();
         }
 
-        // 收货地址
-        LitemallAddress checkedAddress = addressService.query(userId, addressId);
-        if (checkedAddress == null) {
-            return ResponseUtil.badArgument();
-        }
-
-        // 团购优惠
-        BigDecimal grouponPrice = new BigDecimal(0);
-        LitemallGrouponRules grouponRules = grouponRulesService.findById(grouponRulesId);
-        if (grouponRules != null) {
-            grouponPrice = grouponRules.getDiscount();
-        }
-
-        // 货品价格
-        List<LitemallCart> checkedGoodsList = null;
-        if (cartId.equals(0)) {
-            checkedGoodsList = cartService.queryByUidAndChecked(userId);
-        } else {
-            LitemallCart cart = cartService.findById(cartId);
-            checkedGoodsList = new ArrayList<>(1);
-            checkedGoodsList.add(cart);
-        }
-        if (checkedGoodsList.size() == 0) {
+        OrderPrice price = calcOrderPrice(userId, param, grouponRules);
+        if (price == null) {
             return ResponseUtil.badArgumentValue();
         }
-        BigDecimal checkedGoodsPrice = new BigDecimal(0);
-        for (LitemallCart checkGoods : checkedGoodsList) {
-            //  只有当团购规格商品ID符合才进行团购优惠
-            if (grouponRules != null && grouponRules.getGoodsId().equals(checkGoods.getGoodsId())) {
-                checkedGoodsPrice = checkedGoodsPrice.add(checkGoods.getPrice().subtract(grouponPrice).multiply(new BigDecimal(checkGoods.getNumber())));
-            } else {
-                checkedGoodsPrice = checkedGoodsPrice.add(checkGoods.getPrice().multiply(new BigDecimal(checkGoods.getNumber())));
+
+        LitemallOrder order = buildOrder(userId, param, address, grouponRules, price);
+        orderService.add(order);
+        saveOrderGoods(order, price.goodsList);
+        clearCart(userId, param.cartId);
+        reduceStock(price.goodsList);
+        useCoupon(param, order.getId());
+        Integer grouponLinkId = createGroupon(param, userId, order.getId());
+        boolean payed = payZeroOrder(order);
+
+        return submitResult(order.getId(), payed, grouponLinkId);
+    }
+
+    /** submit 请求参数，集中解析避免方法里散落 7 个局部变量 */
+    private static class SubmitParam {
+        private Integer cartId;
+        private Integer addressId;
+        private Integer couponId;
+        private Integer userCouponId;
+        private String message;
+        private Integer grouponRulesId;
+        private Integer grouponLinkId;
+
+        private static SubmitParam parse(String body) {
+            SubmitParam param = new SubmitParam();
+            param.cartId = JacksonUtil.parseInteger(body, "cartId");
+            param.addressId = JacksonUtil.parseInteger(body, "addressId");
+            param.couponId = JacksonUtil.parseInteger(body, "couponId");
+            param.userCouponId = JacksonUtil.parseInteger(body, "userCouponId");
+            param.message = JacksonUtil.parseString(body, "message");
+            param.grouponRulesId = JacksonUtil.parseInteger(body, "grouponRulesId");
+            param.grouponLinkId = JacksonUtil.parseInteger(body, KEY_GROUPON_LINK_ID);
+            return param;
+        }
+    }
+
+    /** 计价结果，一次算完再落单 */
+    private static class OrderPrice {
+        private final List<LitemallCart> goodsList;
+        private final BigDecimal goodsPrice;
+        private final BigDecimal couponPrice;
+        private final BigDecimal freightPrice;
+        private final BigDecimal orderPrice;
+
+        private OrderPrice(List<LitemallCart> goodsList, BigDecimal goodsPrice,
+                           BigDecimal couponPrice, BigDecimal freightPrice, BigDecimal orderPrice) {
+            this.goodsList = goodsList;
+            this.goodsPrice = goodsPrice;
+            this.couponPrice = couponPrice;
+            this.freightPrice = freightPrice;
+            this.orderPrice = orderPrice;
+        }
+    }
+
+    private Object checkGroupon(SubmitParam param, LitemallGrouponRules rules, Integer userId) {
+        if (param.grouponRulesId == null || param.grouponRulesId <= 0) {
+            return null;
+        }
+        if (rules == null) {
+            return ResponseUtil.badArgument();
+        }
+        if (rules.getStatus().equals(GrouponConstant.RULE_STATUS_DOWN_EXPIRE)) {
+            return ResponseUtil.fail(GROUPON_EXPIRED, "团购已过期!");
+        }
+        if (rules.getStatus().equals(GrouponConstant.RULE_STATUS_DOWN_ADMIN)) {
+            return ResponseUtil.fail(GROUPON_OFFLINE, "团购已下线!");
+        }
+        if (param.grouponLinkId == null || param.grouponLinkId <= 0) {
+            return null;
+        }
+        return checkGrouponJoin(param.grouponLinkId, rules, userId);
+    }
+
+    private Object checkGrouponJoin(Integer grouponLinkId, LitemallGrouponRules rules, Integer userId) {
+        if (grouponService.countGroupon(grouponLinkId) >= (rules.getDiscountMember() - 1)) {
+            return ResponseUtil.fail(GROUPON_FULL, "团购活动人数已满!");
+        }
+        if (grouponService.hasJoin(userId, grouponLinkId)) {
+            return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
+        }
+        LitemallGroupon groupon = grouponService.queryById(userId, grouponLinkId);
+        if (groupon != null && groupon.getCreatorUserId().equals(userId)) {
+            return ResponseUtil.fail(GROUPON_JOIN, "团购活动已经参加!");
+        }
+        return null;
+    }
+
+    /** 参数缺失和地址不存在在原逻辑里都返回 badArgument，合并成一个空值出口 */
+    private LitemallAddress queryAddress(Integer userId, SubmitParam param) {
+        if (param.cartId == null || param.addressId == null || param.couponId == null) {
+            return null;
+        }
+        return addressService.query(userId, param.addressId);
+    }
+
+    private List<LitemallCart> listCheckedGoods(Integer userId, Integer cartId) {
+        if (cartId.equals(0)) {
+            return cartService.queryByUidAndChecked(userId);
+        }
+        List<LitemallCart> goodsList = new ArrayList<>(1);
+        goodsList.add(cartService.findById(cartId));
+        return goodsList;
+    }
+
+    private BigDecimal sumGoodsPrice(List<LitemallCart> goodsList, LitemallGrouponRules grouponRules) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (LitemallCart goods : goodsList) {
+            BigDecimal price = goods.getPrice();
+            if (grouponRules != null && grouponRules.getGoodsId().equals(goods.getGoodsId())) {
+                price = price.subtract(grouponRules.getDiscount());
             }
+            total = total.add(price.multiply(new BigDecimal(goods.getNumber())));
         }
+        return total;
+    }
 
-        // 获取可用的优惠券信息
-        // 使用优惠券减免的金额
-        BigDecimal couponPrice = new BigDecimal(0);
-        // 如果couponId=0则没有优惠券，couponId=-1则不使用优惠券
-        if (couponId != 0 && couponId != -1) {
-            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponId, userCouponId, checkedGoodsPrice, checkedGoodsList);
-            if (coupon == null) {
-                return ResponseUtil.badArgumentValue();
-            }
-            couponPrice = coupon.getDiscount();
+    /** 返回 null 表示优惠券不可用，与原 badArgumentValue 行为一致 */
+    private BigDecimal calcCouponPrice(Integer userId, SubmitParam param,
+                                       List<LitemallCart> goodsList, BigDecimal goodsPrice) {
+        if (param.couponId == 0 || param.couponId == -1) {
+            return BigDecimal.ZERO;
         }
-
-
-        // 根据订单商品总价计算运费，满足条件（例如88元）则免运费，否则需要支付运费（例如8元）；
-        BigDecimal freightPrice = new BigDecimal(0);
-        if (checkedGoodsPrice.compareTo(SystemConfig.getFreightLimit()) < 0) {
-            freightPrice = SystemConfig.getFreight();
+        LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, param.couponId,
+                param.userCouponId, goodsPrice, goodsList);
+        if (coupon == null) {
+            return null;
         }
+        return coupon.getDiscount();
+    }
 
-        // 可以使用的其他钱，例如用户积分
-        BigDecimal integralPrice = new BigDecimal(0);
+    private BigDecimal calcFreight(BigDecimal goodsPrice) {
+        if (goodsPrice.compareTo(SystemConfig.getFreightLimit()) < 0) {
+            return SystemConfig.getFreight();
+        }
+        return BigDecimal.ZERO;
+    }
 
-        // 订单费用
-        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice).max(new BigDecimal(0));
-        // 最终支付费用
-        BigDecimal actualPrice = orderTotalPrice.subtract(integralPrice);
+    private OrderPrice calcOrderPrice(Integer userId, SubmitParam param, LitemallGrouponRules grouponRules) {
+        List<LitemallCart> goodsList = listCheckedGoods(userId, param.cartId);
+        if (goodsList.isEmpty()) {
+            return null;
+        }
+        BigDecimal goodsPrice = sumGoodsPrice(goodsList, grouponRules);
+        BigDecimal couponPrice = calcCouponPrice(userId, param, goodsList, goodsPrice);
+        if (couponPrice == null) {
+            return null;
+        }
+        BigDecimal freightPrice = calcFreight(goodsPrice);
+        BigDecimal orderPrice = goodsPrice.add(freightPrice).subtract(couponPrice).max(BigDecimal.ZERO);
+        return new OrderPrice(goodsList, goodsPrice, couponPrice, freightPrice, orderPrice);
+    }
 
-        Integer orderId = null;
-        LitemallOrder order = null;
-        // 订单
-        order = new LitemallOrder();
+    private LitemallOrder buildOrder(Integer userId, SubmitParam param, LitemallAddress address,
+                                     LitemallGrouponRules grouponRules, OrderPrice price) {
+        LitemallOrder order = new LitemallOrder();
         order.setUserId(userId);
         order.setOrderSn(orderService.generateOrderSn(userId));
         order.setOrderStatus(OrderUtil.STATUS_CREATE);
-        order.setConsignee(checkedAddress.getName());
-        order.setMobile(checkedAddress.getTel());
-        order.setMessage(message);
-        String detailedAddress = checkedAddress.getProvince() + checkedAddress.getCity() + checkedAddress.getCounty() + " " + checkedAddress.getAddressDetail();
-        order.setAddress(detailedAddress);
-        order.setGoodsPrice(checkedGoodsPrice);
-        order.setFreightPrice(freightPrice);
-        order.setCouponPrice(couponPrice);
-        order.setIntegralPrice(integralPrice);
-        order.setOrderPrice(orderTotalPrice);
-        order.setActualPrice(actualPrice);
+        order.setConsignee(address.getName());
+        order.setMobile(address.getTel());
+        order.setMessage(param.message);
+        order.setAddress(address.getProvince() + address.getCity() + address.getCounty()
+                + " " + address.getAddressDetail());
+        order.setGoodsPrice(price.goodsPrice);
+        order.setFreightPrice(price.freightPrice);
+        order.setCouponPrice(price.couponPrice);
+        order.setIntegralPrice(BigDecimal.ZERO);
+        order.setOrderPrice(price.orderPrice);
+        order.setActualPrice(price.orderPrice);
+        order.setGrouponPrice(grouponRules != null ? grouponRules.getDiscount() : BigDecimal.ZERO);
+        return order;
+    }
 
-        // 有团购
-        if (grouponRules != null) {
-            order.setGrouponPrice(grouponPrice);    //  团购价格
-        } else {
-            order.setGrouponPrice(new BigDecimal(0));    //  团购价格
-        }
-
-        // 添加订单表项
-        orderService.add(order);
-        orderId = order.getId();
-
-        // 添加订单商品表项
-        for (LitemallCart cartGoods : checkedGoodsList) {
-            // 订单商品
+    private void saveOrderGoods(LitemallOrder order, List<LitemallCart> goodsList) {
+        for (LitemallCart cartGoods : goodsList) {
             LitemallOrderGoods orderGoods = new LitemallOrderGoods();
             orderGoods.setOrderId(order.getId());
             orderGoods.setGoodsId(cartGoods.getGoodsId());
@@ -411,22 +462,22 @@ public class WxOrderService {
             orderGoods.setNumber(cartGoods.getNumber());
             orderGoods.setSpecifications(cartGoods.getSpecifications());
             orderGoods.setAddTime(LocalDateTime.now());
-
             orderGoodsService.add(orderGoods);
         }
+    }
 
-        // 删除购物车里面的商品信息
-        if(cartId.equals(0)){
+    private void clearCart(Integer userId, Integer cartId) {
+        if (cartId.equals(0)) {
             cartService.clearGoods(userId);
-        }else{
+        } else {
             cartService.deleteById(cartId);
         }
+    }
 
-        // 商品货品数量减少
-        for (LitemallCart checkGoods : checkedGoodsList) {
+    private void reduceStock(List<LitemallCart> goodsList) {
+        for (LitemallCart checkGoods : goodsList) {
             Integer productId = checkGoods.getProductId();
             LitemallGoodsProduct product = productService.findById(productId);
-
             int remainNumber = product.getNumber() - checkGoods.getNumber();
             if (remainNumber < 0) {
                 throw new RuntimeException("下单的商品货品数量大于库存量");
@@ -435,102 +486,116 @@ public class WxOrderService {
                 throw new RuntimeException("商品货品库存减少失败");
             }
         }
+    }
 
-        // 如果使用了优惠券，设置优惠券使用状态
-        if (couponId != 0 && couponId != -1) {
-            LitemallCouponUser couponUser = couponUserService.findById(userCouponId);
-            couponUser.setStatus(CouponUserConstant.STATUS_USED);
-            couponUser.setUsedTime(LocalDateTime.now());
-            couponUser.setOrderId(orderId);
-            couponUserService.update(couponUser);
+    private void useCoupon(SubmitParam param, Integer orderId) {
+        if (param.couponId == 0 || param.couponId == -1) {
+            return;
         }
+        LitemallCouponUser couponUser = couponUserService.findById(param.userCouponId);
+        couponUser.setStatus(CouponUserConstant.STATUS_USED);
+        couponUser.setUsedTime(LocalDateTime.now());
+        couponUser.setOrderId(orderId);
+        couponUserService.update(couponUser);
+    }
 
-        //如果是团购项目，添加团购信息
-        if (grouponRulesId != null && grouponRulesId > 0) {
-            LitemallGroupon groupon = new LitemallGroupon();
-            groupon.setOrderId(orderId);
-            groupon.setStatus(GrouponConstant.STATUS_NONE);
-            groupon.setUserId(userId);
-            groupon.setRulesId(grouponRulesId);
-
-            //参与者
-            if (grouponLinkId != null && grouponLinkId > 0) {
-                //参与的团购记录
-                LitemallGroupon baseGroupon = grouponService.queryById(grouponLinkId);
-                groupon.setCreatorUserId(baseGroupon.getCreatorUserId());
-                groupon.setGrouponId(grouponLinkId);
-                groupon.setShareUrl(baseGroupon.getShareUrl());
-                grouponService.createGroupon(groupon);
-            } else {
-                groupon.setCreatorUserId(userId);
-                groupon.setCreatorUserTime(LocalDateTime.now());
-                groupon.setGrouponId(0);
-                grouponService.createGroupon(groupon);
-                grouponLinkId = groupon.getId();
-            }
+    /** 返回应回传给前端的团购活动 id；非团购返回 0 */
+    private Integer createGroupon(SubmitParam param, Integer userId, Integer orderId) {
+        if (param.grouponRulesId == null || param.grouponRulesId <= 0) {
+            return 0;
         }
-
-        // NOTE: 建议开发者从业务场景核实下面代码，防止用户利用业务BUG使订单跳过支付环节。
-        // 如果订单实际支付费用是0，则直接跳过支付变成待发货状态
-        boolean payed = false;
-        if (order.getActualPrice().equals(new BigDecimal("0.00"))) {
-            payed = true;
-
-            LitemallOrder o = new LitemallOrder();
-            o.setId(orderId);
-            o.setOrderStatus(OrderUtil.STATUS_PAY);
-            orderService.updateSelective(o);
-
-            //  支付成功，有团购信息，更新团购信息
-            LitemallGroupon groupon = grouponService.queryByOrderId(order.getId());
-            if (groupon != null) {
-                grouponRules = grouponRulesService.findById(groupon.getRulesId());
-
-                //仅当发起者才创建分享图片
-                if (groupon.getGrouponId() == 0) {
-                    String url = qCodeService.createGrouponShareImage(grouponRules.getGoodsName(), grouponRules.getPicUrl(), groupon);
-                    groupon.setShareUrl(url);
-                }
-                groupon.setStatus(GrouponConstant.STATUS_ON);
-                if (grouponService.updateById(groupon) == 0) {
-                    throw new RuntimeException("更新数据已失效");
-                }
-
-
-                List<LitemallGroupon> grouponList = grouponService.queryJoinRecord(groupon.getGrouponId());
-                if (groupon.getGrouponId() != 0 && (grouponList.size() >= grouponRules.getDiscountMember() - 1)) {
-                    for (LitemallGroupon grouponActivity : grouponList) {
-                        grouponActivity.setStatus(GrouponConstant.STATUS_SUCCEED);
-                        grouponService.updateById(grouponActivity);
-                    }
-
-                    LitemallGroupon grouponSource = grouponService.queryById(groupon.getGrouponId());
-                    grouponSource.setStatus(GrouponConstant.STATUS_SUCCEED);
-                    grouponService.updateById(grouponSource);
-                }
-            }
-
-            //TODO 发送邮件和短信通知，这里采用异步发送
-            // 订单支付成功以后，会发送短信给用户，以及发送邮件给管理员
-            notifyService.notifyMail("新订单通知", order.toString());
-            // 这里微信的短信平台对参数长度有限制，所以将订单号只截取后6位
-            notifyService.notifySmsTemplateSync(order.getMobile(), NotifyType.PAY_SUCCEED, new String[]{order.getOrderSn().substring(8, 14)});
+        LitemallGroupon groupon = new LitemallGroupon();
+        groupon.setOrderId(orderId);
+        groupon.setStatus(GrouponConstant.STATUS_NONE);
+        groupon.setUserId(userId);
+        groupon.setRulesId(param.grouponRulesId);
+        if (param.grouponLinkId != null && param.grouponLinkId > 0) {
+            LitemallGroupon baseGroupon = grouponService.queryById(param.grouponLinkId);
+            groupon.setCreatorUserId(baseGroupon.getCreatorUserId());
+            groupon.setGrouponId(param.grouponLinkId);
+            groupon.setShareUrl(baseGroupon.getShareUrl());
+            grouponService.createGroupon(groupon);
+            return param.grouponLinkId;
         }
-        else {
-            // 订单支付超期任务
-            taskService.addTask(new OrderUnpaidTask(orderId));
-        }
+        groupon.setCreatorUserId(userId);
+        groupon.setCreatorUserTime(LocalDateTime.now());
+        groupon.setGrouponId(0);
+        grouponService.createGroupon(groupon);
+        return groupon.getId();
+    }
 
+    /** 0 元订单直接转待发货，否则挂超时取消任务 */
+    private boolean payZeroOrder(LitemallOrder order) {
+        if (!order.getActualPrice().equals(new BigDecimal("0.00"))) {
+            taskService.addTask(new OrderUnpaidTask(order.getId()));
+            return false;
+        }
+        LitemallOrder update = new LitemallOrder();
+        update.setId(order.getId());
+        update.setOrderStatus(OrderUtil.STATUS_PAY);
+        orderService.updateSelective(update);
+        if (!updateGrouponStatusAfterPay(order)) {
+            throw new RuntimeException(MSG_UPDATE_FAILED);
+        }
+        notifyService.notifyMail("新订单通知", order.toString());
+        notifyService.notifySmsTemplateSync(order.getMobile(), NotifyType.PAY_SUCCEED,
+                new String[]{order.getOrderSn().substring(8, 14)});
+        return true;
+    }
+
+    /** 支付成功后更新团购状态，返回 false 表示乐观锁更新失败 */
+    private boolean updateGrouponStatusAfterPay(LitemallOrder order) {
+        LitemallGroupon groupon = grouponService.queryByOrderId(order.getId());
+        if (groupon == null) {
+            return true;
+        }
+        LitemallGrouponRules rules = grouponRulesService.findById(groupon.getRulesId());
+        if (groupon.getGrouponId() == 0) {
+            String url = qCodeService.createGrouponShareImage(rules.getGoodsName(), rules.getPicUrl(), groupon);
+            groupon.setShareUrl(url);
+        }
+        groupon.setStatus(GrouponConstant.STATUS_ON);
+        if (grouponService.updateById(groupon) == 0) {
+            return false;
+        }
+        finishGroupon(groupon, rules);
+        return true;
+    }
+
+    private void finishGroupon(LitemallGroupon groupon, LitemallGrouponRules rules) {
+        if (groupon.getGrouponId() == 0) {
+            return;
+        }
+        List<LitemallGroupon> grouponList = grouponService.queryJoinRecord(groupon.getGrouponId());
+        if (grouponList.size() < rules.getDiscountMember() - 1) {
+            return;
+        }
+        for (LitemallGroupon item : grouponList) {
+            item.setStatus(GrouponConstant.STATUS_SUCCEED);
+            grouponService.updateById(item);
+        }
+        LitemallGroupon source = grouponService.queryById(groupon.getGrouponId());
+        source.setStatus(GrouponConstant.STATUS_SUCCEED);
+        grouponService.updateById(source);
+    }
+
+    private Object submitResult(Integer orderId, boolean payed, Integer grouponLinkId) {
         Map<String, Object> data = new HashMap<>();
-        data.put("orderId", orderId);
+        data.put(KEY_ORDER_ID, orderId);
         data.put("payed", payed);
-        if (grouponRulesId != null && grouponRulesId > 0) {
-            data.put("grouponLinkId", grouponLinkId);
-        }
-        else {
-            data.put("grouponLinkId", 0);
-        }
+        data.put(KEY_GROUPON_LINK_ID, grouponLinkId);
         return ResponseUtil.ok(data);
+    }
+
+    private void checkPayResult(WxPayOrderNotifyResult result, String xmlResult) throws WxPayException {
+        if (!WxPayConstants.ResultCode.SUCCESS.equals(result.getResultCode())) {
+            logger.error(xmlResult);
+            throw new WxPayException("微信通知支付失败！");
+        }
+        if (!WxPayConstants.ResultCode.SUCCESS.equals(result.getReturnCode())) {
+            logger.error(xmlResult);
+            throw new WxPayException("微信通知支付失败！");
+        }
     }
 
     /**
@@ -550,7 +615,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
@@ -575,7 +640,7 @@ public class WxOrderService {
         order.setOrderStatus(OrderUtil.STATUS_CANCEL);
         order.setEndTime(LocalDateTime.now());
         if (orderService.updateWithOptimisticLocker(order) == 0) {
-            throw new RuntimeException("更新数据已失效");
+            throw new RuntimeException(MSG_UPDATE_FAILED);
         }
 
         // 商品货品数量增加
@@ -610,7 +675,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
@@ -626,13 +691,13 @@ public class WxOrderService {
         // 检测是否能够取消
         OrderHandleOption handleOption = OrderUtil.build(order);
         if (!handleOption.isPay()) {
-            return ResponseUtil.fail(ORDER_INVALID_OPERATION, "订单不能支付");
+            return ResponseUtil.fail(ORDER_INVALID_OPERATION, MSG_ORDER_CANNOT_PAY);
         }
 
         LitemallUser user = userService.findById(userId);
         String openid = user.getWeixinOpenid();
         if (openid == null) {
-            return ResponseUtil.fail(AUTH_OPENID_UNACCESS, "订单不能支付");
+            return ResponseUtil.fail(AUTH_OPENID_UNACCESS, MSG_ORDER_CANNOT_PAY);
         }
         WxPayMpOrderResult result = null;
         try {
@@ -650,7 +715,7 @@ public class WxOrderService {
             result = wxPayService.createOrder(orderRequest);
         } catch (Exception e) {
             e.printStackTrace();
-            return ResponseUtil.fail(ORDER_PAY_FAIL, "订单不能支付");
+            return ResponseUtil.fail(ORDER_PAY_FAIL, MSG_ORDER_CANNOT_PAY);
         }
 
         if (orderService.updateWithOptimisticLocker(order) == 0) {
@@ -672,7 +737,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
@@ -688,7 +753,7 @@ public class WxOrderService {
         // 检测是否能够取消
         OrderHandleOption handleOption = OrderUtil.build(order);
         if (!handleOption.isPay()) {
-            return ResponseUtil.fail(ORDER_INVALID_OPERATION, "订单不能支付");
+            return ResponseUtil.fail(ORDER_INVALID_OPERATION, MSG_ORDER_CANNOT_PAY);
         }
 
         WxPayMwebOrderResult result = null;
@@ -726,7 +791,7 @@ public class WxOrderService {
      */
     @Transactional
     public Object payNotify(HttpServletRequest request, HttpServletResponse response) {
-        String xmlResult = null;
+        String xmlResult;
         try {
             xmlResult = IOUtils.toString(request.getInputStream(), request.getCharacterEncoding());
         } catch (IOException e) {
@@ -734,18 +799,10 @@ public class WxOrderService {
             return WxPayNotifyResponse.fail(e.getMessage());
         }
 
-        WxPayOrderNotifyResult result = null;
+        WxPayOrderNotifyResult result;
         try {
             result = wxPayService.parseOrderNotifyResult(xmlResult);
-
-            if(!WxPayConstants.ResultCode.SUCCESS.equals(result.getResultCode())){
-                logger.error(xmlResult);
-                throw new WxPayException("微信通知支付失败！");
-            }
-            if(!WxPayConstants.ResultCode.SUCCESS.equals(result.getReturnCode())){
-                logger.error(xmlResult);
-                throw new WxPayException("微信通知支付失败！");
-            }
+            checkPayResult(result, xmlResult);
         } catch (WxPayException e) {
             e.printStackTrace();
             return WxPayNotifyResponse.fail(e.getMessage());
@@ -755,63 +812,33 @@ public class WxOrderService {
         logger.info(result);
 
         String orderSn = result.getOutTradeNo();
-        String payId = result.getTransactionId();
-
-        // 分转化成元
-        String totalFee = BaseWxPayResult.fenToYuan(result.getTotalFee());
         LitemallOrder order = orderService.findBySn(orderSn);
         if (order == null) {
             return WxPayNotifyResponse.fail("订单不存在 sn=" + orderSn);
         }
-
         // 检查这个订单是否已经处理过
         if (OrderUtil.hasPayed(order)) {
             return WxPayNotifyResponse.success("订单已经处理成功!");
         }
-
         // 检查支付订单金额
+        String totalFee = BaseWxPayResult.fenToYuan(result.getTotalFee());
         if (!totalFee.equals(order.getActualPrice().toString())) {
             return WxPayNotifyResponse.fail(order.getOrderSn() + " : 支付金额不符合 totalFee=" + totalFee);
         }
 
-        order.setPayId(payId);
+        order.setPayId(result.getTransactionId());
         order.setPayTime(LocalDateTime.now());
         order.setOrderStatus(OrderUtil.STATUS_PAY);
         if (orderService.updateWithOptimisticLocker(order) == 0) {
-            return WxPayNotifyResponse.fail("更新数据已失效");
+            return WxPayNotifyResponse.fail(MSG_UPDATE_FAILED);
         }
 
-        //  支付成功，有团购信息，更新团购信息
-        LitemallGroupon groupon = grouponService.queryByOrderId(order.getId());
-        if (groupon != null) {
-            LitemallGrouponRules grouponRules = grouponRulesService.findById(groupon.getRulesId());
-
-            //仅当发起者才创建分享图片
-            if (groupon.getGrouponId() == 0) {
-                String url = qCodeService.createGrouponShareImage(grouponRules.getGoodsName(), grouponRules.getPicUrl(), groupon);
-                groupon.setShareUrl(url);
-            }
-            groupon.setStatus(GrouponConstant.STATUS_ON);
-            if (grouponService.updateById(groupon) == 0) {
-                return WxPayNotifyResponse.fail("更新数据已失效");
-            }
-
-
-            List<LitemallGroupon> grouponList = grouponService.queryJoinRecord(groupon.getGrouponId());
-            if (groupon.getGrouponId() != 0 && (grouponList.size() >= grouponRules.getDiscountMember() - 1)) {
-                for (LitemallGroupon grouponActivity : grouponList) {
-                    grouponActivity.setStatus(GrouponConstant.STATUS_SUCCEED);
-                    grouponService.updateById(grouponActivity);
-                }
-
-                LitemallGroupon grouponSource = grouponService.queryById(groupon.getGrouponId());
-                grouponSource.setStatus(GrouponConstant.STATUS_SUCCEED);
-                grouponService.updateById(grouponSource);
-            }
+        // 支付成功，有团购信息，更新团购信息
+        if (!updateGrouponStatusAfterPay(order)) {
+            return WxPayNotifyResponse.fail(MSG_UPDATE_FAILED);
         }
 
         //TODO 发送邮件和短信通知，这里采用异步发送
-        // 订单支付成功以后，会发送短信给用户，以及发送邮件给管理员
         notifyService.notifyMail("新订单通知", order.toString());
         // 这里微信的短信平台对参数长度有限制，所以将订单号只截取后6位
         notifyService.notifySmsTemplateSync(order.getMobile(), NotifyType.PAY_SUCCEED, new String[]{orderSn.substring(8, 14)});
@@ -836,7 +863,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
@@ -881,7 +908,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
@@ -924,7 +951,7 @@ public class WxOrderService {
         if (userId == null) {
             return ResponseUtil.unlogin();
         }
-        Integer orderId = JacksonUtil.parseInteger(body, "orderId");
+        Integer orderId = JacksonUtil.parseInteger(body, KEY_ORDER_ID);
         if (orderId == null) {
             return ResponseUtil.badArgument();
         }
