@@ -49,72 +49,65 @@ public class AdminGoodsService {
     }
 
     private Object validate(GoodsAllinone goodsAllinone) {
-        LitemallGoods goods = goodsAllinone.getGoods();
-        String name = goods.getName();
-        if (StringUtils.isEmpty(name)) {
+        Object error = validateGoods(goodsAllinone.getGoods());
+        if (error != null) {
+            return error;
+        }
+        error = validateAttributes(goodsAllinone.getAttributes());
+        if (error != null) {
+            return error;
+        }
+        error = validateSpecifications(goodsAllinone.getSpecifications());
+        if (error != null) {
+            return error;
+        }
+        return validateProducts(goodsAllinone.getProducts());
+    }
+
+    private Object validateGoods(LitemallGoods goods) {
+        if (StringUtils.isEmpty(goods.getName()) || StringUtils.isEmpty(goods.getGoodsSn())) {
             return ResponseUtil.badArgument();
         }
-        String goodsSn = goods.getGoodsSn();
-        if (StringUtils.isEmpty(goodsSn)) {
-            return ResponseUtil.badArgument();
-        }
-        // 品牌商可以不设置，如果设置则需要验证品牌商存在
         Integer brandId = goods.getBrandId();
-        if (brandId != null && brandId != 0) {
-            if (brandService.findById(brandId) == null) {
-                return ResponseUtil.badArgumentValue();
-            }
+        if (brandId != null && brandId != 0 && brandService.findById(brandId) == null) {
+            return ResponseUtil.badArgumentValue();
         }
-        // 分类可以不设置，如果设置则需要验证分类存在
         Integer categoryId = goods.getCategoryId();
-        if (categoryId != null && categoryId != 0) {
-            if (categoryService.findById(categoryId) == null) {
-                return ResponseUtil.badArgumentValue();
-            }
+        if (categoryId != null && categoryId != 0 && categoryService.findById(categoryId) == null) {
+            return ResponseUtil.badArgumentValue();
         }
+        return null;
+    }
 
-        LitemallGoodsAttribute[] attributes = goodsAllinone.getAttributes();
+    private Object validateAttributes(LitemallGoodsAttribute[] attributes) {
         for (LitemallGoodsAttribute attribute : attributes) {
-            String attr = attribute.getAttribute();
-            if (StringUtils.isEmpty(attr)) {
-                return ResponseUtil.badArgument();
-            }
-            String value = attribute.getValue();
-            if (StringUtils.isEmpty(value)) {
+            if (StringUtils.isEmpty(attribute.getAttribute()) || StringUtils.isEmpty(attribute.getValue())) {
                 return ResponseUtil.badArgument();
             }
         }
+        return null;
+    }
 
-        LitemallGoodsSpecification[] specifications = goodsAllinone.getSpecifications();
+    private Object validateSpecifications(LitemallGoodsSpecification[] specifications) {
         for (LitemallGoodsSpecification specification : specifications) {
-            String spec = specification.getSpecification();
-            if (StringUtils.isEmpty(spec)) {
-                return ResponseUtil.badArgument();
-            }
-            String value = specification.getValue();
-            if (StringUtils.isEmpty(value)) {
+            if (StringUtils.isEmpty(specification.getSpecification())
+                    || StringUtils.isEmpty(specification.getValue())) {
                 return ResponseUtil.badArgument();
             }
         }
+        return null;
+    }
 
-        LitemallGoodsProduct[] products = goodsAllinone.getProducts();
+    private Object validateProducts(LitemallGoodsProduct[] products) {
         for (LitemallGoodsProduct product : products) {
             Integer number = product.getNumber();
             if (number == null || number < 0) {
                 return ResponseUtil.badArgument();
             }
-
-            BigDecimal price = product.getPrice();
-            if (price == null) {
-                return ResponseUtil.badArgument();
-            }
-
-            String[] productSpecifications = product.getSpecifications();
-            if (productSpecifications.length == 0) {
+            if (product.getPrice() == null || product.getSpecifications().length == 0) {
                 return ResponseUtil.badArgument();
             }
         }
-
         return null;
     }
 
@@ -148,69 +141,71 @@ public class AdminGoodsService {
         }
 
         LitemallGoods goods = goodsAllinone.getGoods();
-        LitemallGoodsAttribute[] attributes = goodsAllinone.getAttributes();
         LitemallGoodsSpecification[] specifications = goodsAllinone.getSpecifications();
         LitemallGoodsProduct[] products = goodsAllinone.getProducts();
+        LitemallGoodsAttribute[] attributes = goodsAllinone.getAttributes();
 
-        //将生成的分享图片地址写入数据库
         String url = qCodeService.createGoodShareImage(goods.getId().toString(), goods.getPicUrl(), goods.getName());
         goods.setShareUrl(url);
+        goods.setRetailPrice(calculateRetailPrice(products));
 
-        // 商品表里面有一个字段retailPrice记录当前商品的最低价
-        BigDecimal retailPrice = new BigDecimal(Integer.MAX_VALUE);
-        for (LitemallGoodsProduct product : products) {
-            BigDecimal productPrice = product.getPrice();
-            if(retailPrice.compareTo(productPrice) == 1){
-                retailPrice = productPrice;
-            }
-        }
-        goods.setRetailPrice(retailPrice);
-        
-        // 商品基本信息表litemall_goods
         if (goodsService.updateById(goods) == 0) {
             throw new RuntimeException("更新数据失败");
         }
 
-        Integer gid = goods.getId();
+        updateSpecifications(specifications);
+        updateProducts(products);
+        updateAttributes(goods.getId(), attributes);
+        updateCartProducts(products, goods);
+        return ResponseUtil.ok();
+    }
 
-        // 商品规格表litemall_goods_specification
+    private BigDecimal calculateRetailPrice(LitemallGoodsProduct[] products) {
+        BigDecimal retailPrice = new BigDecimal(Integer.MAX_VALUE);
+        for (LitemallGoodsProduct product : products) {
+            if (retailPrice.compareTo(product.getPrice()) == 1) {
+                retailPrice = product.getPrice();
+            }
+        }
+        return retailPrice;
+    }
+
+    private void updateSpecifications(LitemallGoodsSpecification[] specifications) {
         for (LitemallGoodsSpecification specification : specifications) {
-            // 目前只支持更新规格表的图片字段
-            if(specification.getUpdateTime() == null){
+            if (specification.getUpdateTime() == null) {
                 specification.setSpecification(null);
                 specification.setValue(null);
                 specificationService.updateById(specification);
             }
         }
+    }
 
-        // 商品货品表litemall_product
+    private void updateProducts(LitemallGoodsProduct[] products) {
         for (LitemallGoodsProduct product : products) {
-            if(product.getUpdateTime() == null) {
+            if (product.getUpdateTime() == null) {
                 productService.updateById(product);
             }
         }
+    }
 
-        // 商品参数表litemall_goods_attribute
+    private void updateAttributes(Integer goodsId, LitemallGoodsAttribute[] attributes) {
         for (LitemallGoodsAttribute attribute : attributes) {
-            if (attribute.getId() == null || attribute.getId().equals(0)){
-                attribute.setGoodsId(goods.getId());
+            if (attribute.getId() == null || attribute.getId().equals(0)) {
+                attribute.setGoodsId(goodsId);
                 attributeService.add(attribute);
-            }
-            else if(attribute.getDeleted()){
+            } else if (attribute.getDeleted()) {
                 attributeService.deleteById(attribute.getId());
-            }
-            else if(attribute.getUpdateTime() == null){
+            } else if (attribute.getUpdateTime() == null) {
                 attributeService.updateById(attribute);
             }
         }
+    }
 
-        // 这里需要注意的是购物车litemall_cart有些字段是拷贝商品的一些字段，因此需要及时更新
-        // 目前这些字段是goods_sn, goods_name, price, pic_url
+    private void updateCartProducts(LitemallGoodsProduct[] products, LitemallGoods goods) {
         for (LitemallGoodsProduct product : products) {
-            cartService.updateProduct(product.getId(), goods.getGoodsSn(), goods.getName(), product.getPrice(), product.getUrl());
+            cartService.updateProduct(product.getId(), goods.getGoodsSn(), goods.getName(),
+                    product.getPrice(), product.getUrl());
         }
-
-        return ResponseUtil.ok();
     }
 
     @Transactional
@@ -236,29 +231,20 @@ public class AdminGoodsService {
         }
 
         LitemallGoods goods = goodsAllinone.getGoods();
-        LitemallGoodsAttribute[] attributes = goodsAllinone.getAttributes();
-        LitemallGoodsSpecification[] specifications = goodsAllinone.getSpecifications();
-        LitemallGoodsProduct[] products = goodsAllinone.getProducts();
-
-        String name = goods.getName();
-        if (goodsService.checkExistByName(name)) {
+        if (goodsService.checkExistByName(goods.getName())) {
             return ResponseUtil.fail(GOODS_NAME_EXIST, "商品名已经存在");
         }
-
-        // 商品表里面有一个字段retailPrice记录当前商品的最低价
-        BigDecimal retailPrice = new BigDecimal(Integer.MAX_VALUE);
-        for (LitemallGoodsProduct product : products) {
-            BigDecimal productPrice = product.getPrice();
-            if(retailPrice.compareTo(productPrice) == 1){
-                retailPrice = productPrice;
-            }
-        }
-        goods.setRetailPrice(retailPrice);
-
-        // 商品基本信息表litemall_goods
+        goods.setRetailPrice(calculateRetailPrice(goodsAllinone.getProducts()));
         goodsService.add(goods);
 
-        //将生成的分享图片地址写入数据库
+        updateShareUrl(goods);
+        addSpecifications(goods.getId(), goodsAllinone.getSpecifications());
+        addAttributes(goods.getId(), goodsAllinone.getAttributes());
+        addProducts(goods.getId(), goodsAllinone.getProducts());
+        return ResponseUtil.ok();
+    }
+
+    private void updateShareUrl(LitemallGoods goods) {
         String url = qCodeService.createGoodShareImage(goods.getId().toString(), goods.getPicUrl(), goods.getName());
         if (!StringUtils.isEmpty(url)) {
             goods.setShareUrl(url);
@@ -266,25 +252,27 @@ public class AdminGoodsService {
                 throw new RuntimeException("更新数据失败");
             }
         }
+    }
 
-        // 商品规格表litemall_goods_specification
+    private void addSpecifications(Integer goodsId, LitemallGoodsSpecification[] specifications) {
         for (LitemallGoodsSpecification specification : specifications) {
-            specification.setGoodsId(goods.getId());
+            specification.setGoodsId(goodsId);
             specificationService.add(specification);
         }
+    }
 
-        // 商品参数表litemall_goods_attribute
+    private void addAttributes(Integer goodsId, LitemallGoodsAttribute[] attributes) {
         for (LitemallGoodsAttribute attribute : attributes) {
-            attribute.setGoodsId(goods.getId());
+            attribute.setGoodsId(goodsId);
             attributeService.add(attribute);
         }
+    }
 
-        // 商品货品表litemall_product
+    private void addProducts(Integer goodsId, LitemallGoodsProduct[] products) {
         for (LitemallGoodsProduct product : products) {
-            product.setGoodsId(goods.getId());
+            product.setGoodsId(goodsId);
             productService.add(product);
         }
-        return ResponseUtil.ok();
     }
 
     public Object list2() {

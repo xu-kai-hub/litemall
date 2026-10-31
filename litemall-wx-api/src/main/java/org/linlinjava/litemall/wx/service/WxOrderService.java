@@ -260,7 +260,7 @@ public class WxOrderService {
             return ResponseUtil.badArgument();
         }
         SubmitParam param = SubmitParam.parse(body);
-        if (param == null) {
+        if (param == null || param.userCouponIdTypeInvalid) {
             return ResponseUtil.badArgument();
         }
         // 订单留言在库中为 varchar(255)，超长直接按参数错误拒绝，不能落到 SQL 层
@@ -306,6 +306,7 @@ public class WxOrderService {
         private String message;
         private Integer grouponRulesId;
         private Integer grouponLinkId;
+        private boolean userCouponIdTypeInvalid;
 
         private static SubmitParam parse(String body) {
             SubmitParam param = new SubmitParam();
@@ -313,6 +314,8 @@ public class WxOrderService {
             param.addressId = JacksonUtil.parseStrictInteger(body, "addressId");
             param.couponId = JacksonUtil.parseStrictInteger(body, "couponId");
             param.userCouponId = JacksonUtil.parseStrictInteger(body, "userCouponId");
+            param.userCouponIdTypeInvalid = JacksonUtil.hasField(body, "userCouponId")
+                    && param.userCouponId == null;
             param.message = JacksonUtil.parseString(body, "message");
             param.grouponRulesId = JacksonUtil.parseStrictInteger(body, "grouponRulesId");
             param.grouponLinkId = JacksonUtil.parseStrictInteger(body, KEY_GROUPON_LINK_ID);

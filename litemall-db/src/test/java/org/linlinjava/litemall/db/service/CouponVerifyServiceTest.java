@@ -400,4 +400,38 @@ class CouponVerifyServiceTest {
 
         assertEquals(coupon, result);
     }
+
+    @Test
+    void testCheckCoupon_deletedGoodsSkippedInCategoryCoupon() {
+        LitemallCoupon coupon = createCoupon(CouponConstant.TIME_TYPE_TIME, null,
+                LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(1),
+                CouponConstant.GOODS_TYPE_CATEGORY, new Integer[]{100}, new BigDecimal("0"),
+                CouponConstant.STATUS_NORMAL);
+        when(couponService.findById(1)).thenReturn(coupon);
+        when(couponUserService.findById(1)).thenReturn(createCouponUser(1, LocalDateTime.now()));
+        when(goodsService.findById(5)).thenReturn(null);
+
+        LitemallCoupon result = couponVerifyService.checkCoupon(1, 1, 1, new BigDecimal("150"),
+                Collections.singletonList(createCart(5, new BigDecimal("150"), (short) 1)));
+
+        assertNull(result);
+    }
+
+    @Test
+    void testCheckCoupon_goodsSubtotalEqualsMin() {
+        LitemallCoupon coupon = createCoupon(CouponConstant.TIME_TYPE_TIME, null,
+                LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(1),
+                CouponConstant.GOODS_TYPE_CATEGORY, new Integer[]{100}, new BigDecimal("100"),
+                CouponConstant.STATUS_NORMAL);
+        when(couponService.findById(1)).thenReturn(coupon);
+        when(couponUserService.findById(1)).thenReturn(createCouponUser(1, LocalDateTime.now()));
+        LitemallGoods goods = new LitemallGoods();
+        goods.setCategoryId(100);
+        when(goodsService.findById(5)).thenReturn(goods);
+
+        LitemallCoupon result = couponVerifyService.checkCoupon(1, 1, 1, new BigDecimal("100"),
+                Collections.singletonList(createCart(5, new BigDecimal("100"), (short) 1)));
+
+        assertSame(coupon, result);
+    }
 }

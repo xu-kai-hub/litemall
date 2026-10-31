@@ -1,51 +1,74 @@
 package org.linlinjava.litemall.db.util;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
-import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.util.Arrays;
+import java.util.List;
 
 public class DbUtil {
 
     public static void backup(File file, String user, String password, String db) {
+        Process child = null;
+        List<String> command = Arrays.asList("mysqldump", "-u" + user, "--set-charset=utf8", db);
         try {
-            Runtime rt = Runtime.getRuntime();
-            String command = "mysqldump -u" + user + " -p" + password + " --set-charset=utf8 " + db;
-            Process child = rt.exec(command);
-            InputStream inputStream = child.getInputStream();
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
-            OutputStreamWriter outputStreamWriter = new OutputStreamWriter( new FileOutputStream(file), StandardCharsets.UTF_8);
-            String str;
-            while ((str = bufferedReader.readLine()) != null) {
-                outputStreamWriter.write(str + "\r\n");
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.redirectError(ProcessBuilder.Redirect.INHERIT);
+            if (password != null) {
+                builder.environment().put("MYSQL_PWD", password);
             }
-            outputStreamWriter.flush();
-            inputStream.close();
-            bufferedReader.close();
-            outputStreamWriter.close();
+            child = builder.start();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(child.getInputStream(), StandardCharsets.UTF_8));
+                 OutputStreamWriter writer = new OutputStreamWriter(
+                         new FileOutputStream(file), StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    writer.write(line + "\r\n");
+                }
+                writer.flush();
+            }
+            child.waitFor();
         } catch (Exception e) {
             e.printStackTrace();
+        } finally {
+            if (child != null) {
+                child.destroy();
+            }
         }
     }
 
     public static void load(File file, String user, String password, String db) {
+        Process child = null;
+        List<String> command = Arrays.asList("mysql", "-u" + user, "--default-character-set=utf8", db);
         try {
-            Runtime rt = Runtime.getRuntime();
-            String command = "mysql -u" + user + " -p" + password + " --default-character-set=utf8 " + db;
-            Process child = rt.exec(command);
-            OutputStream outputStream = child.getOutputStream();
-            BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
-            OutputStreamWriter outputStreamWriter = new OutputStreamWriter(outputStream, StandardCharsets.UTF_8);
-            String str;
-            while ((str = bufferedReader.readLine()) != null) {
-                outputStreamWriter.write(str + "\r\n");
+            ProcessBuilder builder = new ProcessBuilder(command);
+            builder.redirectError(ProcessBuilder.Redirect.INHERIT);
+            if (password != null) {
+                builder.environment().put("MYSQL_PWD", password);
             }
-            outputStreamWriter.flush();
-            outputStream.close();
-            bufferedReader.close();
-            outputStreamWriter.close();
+            child = builder.start();
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(new FileInputStream(file), StandardCharsets.UTF_8));
+                 OutputStreamWriter writer = new OutputStreamWriter(
+                         child.getOutputStream(), StandardCharsets.UTF_8)) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    writer.write(line + "\r\n");
+                }
+                writer.flush();
+            }
+            child.waitFor();
         } catch (Exception e) {
             e.printStackTrace();
+        } finally {
+            if (child != null) {
+                child.destroy();
+            }
         }
     }
 }

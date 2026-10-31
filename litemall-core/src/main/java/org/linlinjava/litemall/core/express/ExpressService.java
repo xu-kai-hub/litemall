@@ -20,6 +20,7 @@ import java.util.Map;
  * 快递鸟即时查询API http://www.kdniao.com/api-track
  */
 public class ExpressService {
+    private static final String UTF_8 = "UTF-8";
 
     private final Log logger = LogFactory.getLog(ExpressService.class);
     //请求url
@@ -87,11 +88,11 @@ public class ExpressService {
         String requestData = "{'OrderCode':'','ShipperCode':'" + expCode + "','LogisticCode':'" + expNo + "'}";
 
         Map<String, String> params = new HashMap<String, String>();
-        params.put("RequestData", URLEncoder.encode(requestData, "UTF-8"));
+        params.put("RequestData", URLEncoder.encode(requestData, UTF_8));
         params.put("EBusinessID", properties.getAppId());
         params.put("RequestType", "1002");
-        String dataSign = encrypt(requestData, properties.getAppKey(), "UTF-8");
-        params.put("DataSign", URLEncoder.encode(dataSign, "UTF-8"));
+        String dataSign = encrypt(requestData, properties.getAppKey(), UTF_8);
+        params.put("DataSign", URLEncoder.encode(dataSign, UTF_8));
         params.put("DataType", "2");
 
         String result = HttpUtil.sendPost(ReqURL, params);

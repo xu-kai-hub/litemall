@@ -1,6 +1,6 @@
 package org.linlinjava.litemall.db.service;
 
-import com.github.pagehelper.PageHelper;
+import com.github.pagehelper.page.PageMethod;
 import org.linlinjava.litemall.db.dao.LitemallCouponUserMapper;
 import org.linlinjava.litemall.db.domain.LitemallCouponUser;
 import org.linlinjava.litemall.db.domain.LitemallCouponUserExample;
@@ -14,6 +14,8 @@ import java.util.List;
 
 @Service
 public class LitemallCouponUserService {
+    private static final String COLUMN_ADD_TIME = "add_time";
+    private static final String ORDER_DESC = "desc";
     @Resource
     private LitemallCouponUserMapper couponUserMapper;
 
@@ -54,22 +56,22 @@ public class LitemallCouponUserService {
         }
 
         if (!StringUtils.isEmpty(page) && !StringUtils.isEmpty(size)) {
-            PageHelper.startPage(page, size);
+            PageMethod.startPage(page, size);
         }
 
         return couponUserMapper.selectByExample(example);
     }
 
     public List<LitemallCouponUser> queryAll(Integer userId, Integer couponId) {
-        return queryList(userId, couponId, CouponUserConstant.STATUS_USABLE, null, null, "add_time", "desc");
+        return queryList(userId, couponId, CouponUserConstant.STATUS_USABLE, null, null, COLUMN_ADD_TIME, ORDER_DESC);
     }
 
     public List<LitemallCouponUser> queryAll(Integer userId) {
-        return queryList(userId, null, CouponUserConstant.STATUS_USABLE, null, null, "add_time", "desc");
+        return queryList(userId, null, CouponUserConstant.STATUS_USABLE, null, null, COLUMN_ADD_TIME, ORDER_DESC);
     }
 
     public LitemallCouponUser queryOne(Integer userId, Integer couponId) {
-        List<LitemallCouponUser> couponUserList = queryList(userId, couponId, CouponUserConstant.STATUS_USABLE, 1, 1, "add_time", "desc");
+        List<LitemallCouponUser> couponUserList = queryList(userId, couponId, CouponUserConstant.STATUS_USABLE, 1, 1, COLUMN_ADD_TIME, ORDER_DESC);
         if(couponUserList.size() == 0){
             return null;
         }

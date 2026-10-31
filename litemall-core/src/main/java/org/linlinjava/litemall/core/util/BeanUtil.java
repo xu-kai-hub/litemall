@@ -10,6 +10,7 @@ public class BeanUtil implements ApplicationContextAware {
     protected static ApplicationContext context;
 
     @Override
+    @SuppressWarnings("squid:S2696")
     public void setApplicationContext(ApplicationContext applicationContext) throws BeansException {
         context = applicationContext;
     }

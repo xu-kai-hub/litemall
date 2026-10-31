@@ -3,13 +3,19 @@ package org.linlinjava.litemall.db.service;
 import org.linlinjava.litemall.db.domain.LitemallCart;
 import org.linlinjava.litemall.db.domain.LitemallCoupon;
 import org.linlinjava.litemall.db.domain.LitemallCouponUser;
+import org.linlinjava.litemall.db.domain.LitemallGoods;
 import org.linlinjava.litemall.db.util.CouponConstant;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
 
 @Service
 public class CouponVerifyService {
@@ -35,83 +41,91 @@ public class CouponVerifyService {
             return null;
         }
 
+        LitemallCouponUser couponUser = findCouponUser(userId, couponId, userCouponId);
+        if (couponUser == null) {
+            return null;
+        }
+        if (!isTimeValid(coupon, couponUser)) {
+            return null;
+        }
+        if (!isGoodsTypeValid(coupon, cartList)) {
+            return null;
+        }
+        if (!CouponConstant.STATUS_NORMAL.equals(coupon.getStatus())) {
+            return null;
+        }
+        if (checkedGoodsPrice.compareTo(coupon.getMin()) < 0) {
+            return null;
+        }
+        return coupon;
+    }
+
+    private LitemallCouponUser findCouponUser(Integer userId, Integer couponId, Integer userCouponId) {
         LitemallCouponUser couponUser = couponUserService.findById(userCouponId);
         if (couponUser == null) {
-            couponUser = couponUserService.queryOne(userId, couponId);
-        } else if (!couponId.equals(couponUser.getCouponId())
-                || !userId.equals(couponUser.getUserId())) {
+            return couponUserService.queryOne(userId, couponId);
+        }
+        if (!couponId.equals(couponUser.getCouponId()) || !userId.equals(couponUser.getUserId())) {
             return null;
         }
+        return couponUser;
+    }
 
-        if (couponUser == null) {
-            return null;
-        }
-
-        // 检查是否超期
+    private boolean isTimeValid(LitemallCoupon coupon, LitemallCouponUser couponUser) {
         Short timeType = coupon.getTimeType();
-        Short days = coupon.getDays();
         LocalDateTime now = LocalDateTime.now();
-        if (timeType.equals(CouponConstant.TIME_TYPE_TIME)) {
-            if (now.isBefore(coupon.getStartTime()) || now.isAfter(coupon.getEndTime())) {
-                return null;
-            }
+        if (CouponConstant.TIME_TYPE_TIME.equals(timeType)) {
+            return !now.isBefore(coupon.getStartTime()) && !now.isAfter(coupon.getEndTime());
         }
-        else if(timeType.equals(CouponConstant.TIME_TYPE_DAYS)) {
-            LocalDateTime expired = couponUser.getAddTime().plusDays(days);
-            if (now.isAfter(expired)) {
-                return null;
-            }
+        if (CouponConstant.TIME_TYPE_DAYS.equals(timeType)) {
+            LocalDateTime expired = couponUser.getAddTime().plusDays(coupon.getDays());
+            return !now.isAfter(expired);
         }
-        else {
-            return null;
-        }
+        return false;
+    }
 
-        // 检测商品是否符合
-        Map<Integer, List<LitemallCart>> cartMap = new HashMap<>();
-        //可使用优惠券的商品或分类
-        List<Integer> goodsValueList = new ArrayList<>(Arrays.asList(coupon.getGoodsValue()));
+    private boolean isGoodsTypeValid(LitemallCoupon coupon, List<LitemallCart> cartList) {
         Short goodType = coupon.getGoodsType();
+        if (!CouponConstant.GOODS_TYPE_CATEGORY.equals(goodType)
+                && !CouponConstant.GOODS_TYPE_ARRAY.equals(goodType)) {
+            return true;
+        }
+        Map<Integer, List<LitemallCart>> cartMap = buildCartMap(goodType, cartList);
+        List<Integer> goodsValueList = new ArrayList<>(Arrays.asList(coupon.getGoodsValue()));
+        goodsValueList.retainAll(cartMap.keySet());
+        if (goodsValueList.isEmpty()) {
+            return false;
+        }
+        BigDecimal total = sumCartPrice(goodsValueList, cartMap);
+        return total.compareTo(coupon.getMin()) >= 0;
+    }
 
-        if (goodType.equals(CouponConstant.GOODS_TYPE_CATEGORY) ||
-                goodType.equals((CouponConstant.GOODS_TYPE_ARRAY))) {
-            for (LitemallCart cart : cartList) {
-                Integer key = goodType.equals(CouponConstant.GOODS_TYPE_ARRAY) ? cart.getGoodsId() :
-                        goodsService.findById(cart.getGoodsId()).getCategoryId();
-                List<LitemallCart> carts = cartMap.get(key);
-                if (carts == null) {
-                    carts = new LinkedList<>();
-                }
-                carts.add(cart);
-                cartMap.put(key, carts);
+    private Map<Integer, List<LitemallCart>> buildCartMap(Short goodType, List<LitemallCart> cartList) {
+        Map<Integer, List<LitemallCart>> cartMap = new HashMap<>();
+        for (LitemallCart cart : cartList) {
+            Integer key = CouponConstant.GOODS_TYPE_ARRAY.equals(goodType)
+                    ? cart.getGoodsId() : categoryIdOf(cart.getGoodsId());
+            if (key == null) {
+                continue;
             }
-            //购物车中可以使用优惠券的商品或分类
-            goodsValueList.retainAll(cartMap.keySet());
-            //可使用优惠券的商品的总价格
-            BigDecimal total = new BigDecimal(0);
+            cartMap.computeIfAbsent(key, k -> new LinkedList<>()).add(cart);
+        }
+        return cartMap;
+    }
 
-            for (Integer goodsId : goodsValueList) {
-                List<LitemallCart> carts = cartMap.get(goodsId);
-                for (LitemallCart cart : carts) {
-                    total = total.add(cart.getPrice().multiply(new BigDecimal(cart.getNumber())));
-                }
-            }
-            //是否达到优惠券满减金额
-            if (goodsValueList.isEmpty() || total.compareTo(coupon.getMin()) == -1) {
-                return null;
+    private Integer categoryIdOf(Integer goodsId) {
+        LitemallGoods goods = goodsService.findById(goodsId);
+        return goods == null ? null : goods.getCategoryId();
+    }
+
+    private BigDecimal sumCartPrice(List<Integer> goodsValueList, Map<Integer, List<LitemallCart>> cartMap) {
+        BigDecimal total = new BigDecimal(0);
+        for (Integer goodsId : goodsValueList) {
+            for (LitemallCart cart : cartMap.get(goodsId)) {
+                total = total.add(cart.getPrice().multiply(new BigDecimal(cart.getNumber())));
             }
         }
-
-        // 检测订单状态
-        Short status = coupon.getStatus();
-        if (!status.equals(CouponConstant.STATUS_NORMAL)) {
-            return null;
-        }
-        // 检测是否满足最低消费
-        if (checkedGoodsPrice.compareTo(coupon.getMin()) == -1) {
-            return null;
-        }
-
-        return coupon;
+        return total;
     }
 
 }

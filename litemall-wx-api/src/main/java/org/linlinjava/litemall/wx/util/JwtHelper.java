@@ -1,5 +1,7 @@
 package org.linlinjava.litemall.wx.util;
 
+import java.security.SecureRandom;
+import java.util.Base64;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.GregorianCalendar;
@@ -15,8 +17,8 @@ import com.auth0.jwt.interfaces.Claim;
 import com.auth0.jwt.interfaces.DecodedJWT;
 
 public class JwtHelper {
-	// 秘钥
-	static final String SECRET = "X-Litemall-Token";
+	// 优先使用环境变量或系统属性；都没有时生成一次性密钥
+	private static final String SECRET = resolveSecret();
 	// 签名是有谁生成
 	static final String ISSUSER = "LITEMALL";
 	// 签名的主题
@@ -25,6 +27,19 @@ public class JwtHelper {
 	static final String AUDIENCE = "MINIAPP";
 	
 	
+	private static String resolveSecret() {
+		String secret = System.getenv("LITEMALL_JWT_SECRET");
+		if (secret == null || secret.isEmpty()) {
+			secret = System.getProperty("litemall.jwt.secret");
+		}
+		if (secret != null && !secret.isEmpty()) {
+			return secret;
+		}
+		byte[] bytes = new byte[32];
+		new SecureRandom().nextBytes(bytes);
+		return Base64.getEncoder().encodeToString(bytes);
+	}
+
 	public String createToken(Integer userId){
 		try {
 		    Algorithm algorithm = Algorithm.HMAC256(SECRET);

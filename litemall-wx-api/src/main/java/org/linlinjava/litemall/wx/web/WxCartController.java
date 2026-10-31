@@ -111,64 +111,10 @@ public class WxCartController {
      */
     @PostMapping("add")
     public Object add(@LoginUser Integer userId, @RequestBody LitemallCart cart) {
-        if (userId == null) {
-            return ResponseUtil.unlogin();
+        CartAddResult result = addToCart(userId, cart, true);
+        if (result.error != null) {
+            return result.error;
         }
-        if (cart == null) {
-            return ResponseUtil.badArgument();
-        }
-
-        Integer productId = cart.getProductId();
-        Integer number = cart.getNumber().intValue();
-        Integer goodsId = cart.getGoodsId();
-        if (!ObjectUtils.allNotNull(productId, number, goodsId)) {
-            return ResponseUtil.badArgument();
-        }
-        if(number <= 0){
-            return ResponseUtil.badArgument();
-        }
-
-        //判断商品是否可以购买
-        LitemallGoods goods = goodsService.findById(goodsId);
-        if (goods == null || !goods.getIsOnSale()) {
-            return ResponseUtil.fail(GOODS_UNSHELVE, "商品已下架");
-        }
-
-        LitemallGoodsProduct product = productService.findById(productId);
-        //判断购物车中是否存在此规格商品
-        LitemallCart existCart = cartService.queryExist(goodsId, productId, userId);
-        if (existCart == null) {
-            //取得规格的信息,判断规格库存
-            if (product == null || number > product.getNumber()) {
-                return ResponseUtil.fail(GOODS_NO_STOCK, "库存不足");
-            }
-
-            cart.setId(null);
-            cart.setGoodsSn(goods.getGoodsSn());
-            cart.setGoodsName((goods.getName()));
-            if(StringUtils.isEmpty(product.getUrl())){
-                cart.setPicUrl(goods.getPicUrl());
-            }
-            else{
-                cart.setPicUrl(product.getUrl());
-            }
-            cart.setPrice(product.getPrice());
-            cart.setSpecifications(product.getSpecifications());
-            cart.setUserId(userId);
-            cart.setChecked(true);
-            cartService.add(cart);
-        } else {
-            //取得规格的信息,判断规格库存
-            int num = existCart.getNumber() + number;
-            if (num > product.getNumber()) {
-                return ResponseUtil.fail(GOODS_NO_STOCK, "库存不足");
-            }
-            existCart.setNumber((short) num);
-            if (cartService.updateById(existCart) == 0) {
-                return ResponseUtil.updatedDataFailed();
-            }
-        }
-
         return goodscount(userId);
     }
 
@@ -185,65 +131,84 @@ public class WxCartController {
      */
     @PostMapping("fastadd")
     public Object fastadd(@LoginUser Integer userId, @RequestBody LitemallCart cart) {
+        CartAddResult result = addToCart(userId, cart, false);
+        if (result.error != null) {
+            return result.error;
+        }
+        return ResponseUtil.ok(result.cartId);
+    }
+
+    private CartAddResult addToCart(Integer userId, LitemallCart cart, boolean merge) {
         if (userId == null) {
-            return ResponseUtil.unlogin();
+            return CartAddResult.error(ResponseUtil.unlogin());
         }
         if (cart == null) {
-            return ResponseUtil.badArgument();
+            return CartAddResult.error(ResponseUtil.badArgument());
         }
-
         Integer productId = cart.getProductId();
-        Integer number = cart.getNumber().intValue();
+        Short number = cart.getNumber();
         Integer goodsId = cart.getGoodsId();
         if (!ObjectUtils.allNotNull(productId, number, goodsId)) {
-            return ResponseUtil.badArgument();
+            return CartAddResult.error(ResponseUtil.badArgument());
         }
-        if(number <= 0){
-            return ResponseUtil.badArgument();
+        if (number <= 0) {
+            return CartAddResult.error(ResponseUtil.badArgument());
         }
 
-        //判断商品是否可以购买
         LitemallGoods goods = goodsService.findById(goodsId);
         if (goods == null || !goods.getIsOnSale()) {
-            return ResponseUtil.fail(GOODS_UNSHELVE, "商品已下架");
+            return CartAddResult.error(ResponseUtil.fail(GOODS_UNSHELVE, "商品已下架"));
         }
 
         LitemallGoodsProduct product = productService.findById(productId);
-        //判断购物车中是否存在此规格商品
         LitemallCart existCart = cartService.queryExist(goodsId, productId, userId);
         if (existCart == null) {
-            //取得规格的信息,判断规格库存
             if (product == null || number > product.getNumber()) {
-                return ResponseUtil.fail(GOODS_NO_STOCK, "库存不足");
+                return CartAddResult.error(ResponseUtil.fail(GOODS_NO_STOCK, "库存不足"));
             }
-
-            cart.setId(null);
-            cart.setGoodsSn(goods.getGoodsSn());
-            cart.setGoodsName((goods.getName()));
-            if(StringUtils.isEmpty(product.getUrl())){
-                cart.setPicUrl(goods.getPicUrl());
-            }
-            else{
-                cart.setPicUrl(product.getUrl());
-            }
-            cart.setPrice(product.getPrice());
-            cart.setSpecifications(product.getSpecifications());
-            cart.setUserId(userId);
-            cart.setChecked(true);
-            cartService.add(cart);
-        } else {
-            //取得规格的信息,判断规格库存
-            int num = number;
-            if (num > product.getNumber()) {
-                return ResponseUtil.fail(GOODS_NO_STOCK, "库存不足");
-            }
-            existCart.setNumber((short) num);
-            if (cartService.updateById(existCart) == 0) {
-                return ResponseUtil.updatedDataFailed();
-            }
+            addNewCart(userId, cart, goods, product);
+            return CartAddResult.ok(cart.getId());
         }
 
-        return ResponseUtil.ok(existCart != null ? existCart.getId() : cart.getId());
+        int num = merge ? existCart.getNumber() + number : number;
+        if (product == null || num > product.getNumber()) {
+            return CartAddResult.error(ResponseUtil.fail(GOODS_NO_STOCK, "库存不足"));
+        }
+        existCart.setNumber((short) num);
+        if (cartService.updateById(existCart) == 0) {
+            return CartAddResult.error(ResponseUtil.updatedDataFailed());
+        }
+        return CartAddResult.ok(existCart.getId());
+    }
+
+    private void addNewCart(Integer userId, LitemallCart cart, LitemallGoods goods, LitemallGoodsProduct product) {
+        cart.setId(null);
+        cart.setGoodsSn(goods.getGoodsSn());
+        cart.setGoodsName(goods.getName());
+        cart.setPicUrl(StringUtils.isEmpty(product.getUrl()) ? goods.getPicUrl() : product.getUrl());
+        cart.setPrice(product.getPrice());
+        cart.setSpecifications(product.getSpecifications());
+        cart.setUserId(userId);
+        cart.setChecked(true);
+        cartService.add(cart);
+    }
+
+    private static class CartAddResult {
+        private final Object error;
+        private final Integer cartId;
+
+        private CartAddResult(Object error, Integer cartId) {
+            this.error = error;
+            this.cartId = cartId;
+        }
+
+        static CartAddResult error(Object error) {
+            return new CartAddResult(error, null);
+        }
+
+        static CartAddResult ok(Integer cartId) {
+            return new CartAddResult(null, cartId);
+        }
     }
 
     /**
@@ -411,130 +376,150 @@ public class WxCartController {
             return ResponseUtil.unlogin();
         }
 
-        // 收货地址
-        LitemallAddress checkedAddress = null;
-        if (addressId != null && !addressId.equals(0)) {
-            checkedAddress = addressService.query(userId, addressId);
-        }
-        if (checkedAddress == null) {
-            checkedAddress = addressService.findDefault(userId);
-            // 如果仍然没有地址，则是没有收货地址
-            // 返回一个空的地址id=0，这样前端则会提醒添加地址
-            if (checkedAddress == null) {
-                checkedAddress = new LitemallAddress();
-                checkedAddress.setId(0);
-                addressId = 0;
-            } else {
-                addressId = checkedAddress.getId();
-            }
-        }
-
-        // 团购优惠
-        BigDecimal grouponPrice = new BigDecimal(0.00);
+        AddressSelection address = resolveAddress(userId, addressId);
         LitemallGrouponRules grouponRules = grouponRulesService.findById(grouponRulesId);
-        if (grouponRules != null) {
-            grouponPrice = grouponRules.getDiscount();
-        }
+        BigDecimal grouponPrice = grouponRules == null ? BigDecimal.ZERO : grouponRules.getDiscount();
 
-        // 商品价格
-        List<LitemallCart> checkedGoodsList = null;
+        List<LitemallCart> checkedGoodsList = loadCheckedGoods(userId, cartId);
+        if (checkedGoodsList == null) {
+            return ResponseUtil.badArgumentValue();
+        }
+        BigDecimal checkedGoodsPrice = calculateGoodsPrice(checkedGoodsList, grouponRules, grouponPrice);
+        CouponSelection coupon = selectCoupon(userId, couponId, userCouponId, checkedGoodsPrice, checkedGoodsList);
+        BigDecimal freightPrice = calculateFreightPrice(checkedGoodsPrice);
+
+        return ResponseUtil.ok(buildCheckoutData(address, cartId, grouponRulesId, grouponPrice,
+                coupon, checkedGoodsPrice, freightPrice, checkedGoodsList));
+    }
+
+    private AddressSelection resolveAddress(Integer userId, Integer addressId) {
+        LitemallAddress address = null;
+        if (addressId != null && !addressId.equals(0)) {
+            address = addressService.query(userId, addressId);
+        }
+        if (address != null) {
+            return new AddressSelection(addressId, address);
+        }
+        address = addressService.findDefault(userId);
+        if (address == null) {
+            LitemallAddress empty = new LitemallAddress();
+            empty.setId(0);
+            return new AddressSelection(0, empty);
+        }
+        return new AddressSelection(address.getId(), address);
+    }
+
+    private List<LitemallCart> loadCheckedGoods(Integer userId, Integer cartId) {
         if (cartId == null || cartId.equals(0)) {
-            checkedGoodsList = cartService.queryByUidAndChecked(userId);
-        } else {
-            LitemallCart cart = cartService.findById(userId, cartId);
-            if (cart == null) {
-                return ResponseUtil.badArgumentValue();
-            }
-            checkedGoodsList = new ArrayList<>(1);
-            checkedGoodsList.add(cart);
+            return cartService.queryByUidAndChecked(userId);
         }
-        BigDecimal checkedGoodsPrice = new BigDecimal(0.00);
-        for (LitemallCart cart : checkedGoodsList) {
-            //  只有当团购规格商品ID符合才进行团购优惠
-            if (grouponRules != null && grouponRules.getGoodsId().equals(cart.getGoodsId())) {
-                checkedGoodsPrice = checkedGoodsPrice.add(cart.getPrice().subtract(grouponPrice).multiply(new BigDecimal(cart.getNumber())));
-            } else {
-                checkedGoodsPrice = checkedGoodsPrice.add(cart.getPrice().multiply(new BigDecimal(cart.getNumber())));
-            }
+        LitemallCart cart = cartService.findById(userId, cartId);
+        if (cart == null) {
+            return null;
         }
+        List<LitemallCart> goodsList = new ArrayList<>(1);
+        goodsList.add(cart);
+        return goodsList;
+    }
 
-        // 计算优惠券可用情况
-        BigDecimal tmpCouponPrice = new BigDecimal(0.00);
-        Integer tmpCouponId = 0;
-        Integer tmpUserCouponId = 0;
-        int tmpCouponLength = 0;
-        List<LitemallCouponUser> couponUserList = couponUserService.queryAll(userId);
-        for(LitemallCouponUser couponUser : couponUserList){
-            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponUser.getCouponId(), couponUser.getId(), checkedGoodsPrice, checkedGoodsList);
-            if(coupon == null){
+    private BigDecimal calculateGoodsPrice(List<LitemallCart> goodsList, LitemallGrouponRules grouponRules, BigDecimal grouponPrice) {
+        BigDecimal total = BigDecimal.ZERO;
+        for (LitemallCart cart : goodsList) {
+            BigDecimal price = cart.getPrice();
+            if (grouponRules != null && grouponRules.getGoodsId().equals(cart.getGoodsId())) {
+                price = price.subtract(grouponPrice);
+            }
+            total = total.add(price.multiply(new BigDecimal(cart.getNumber())));
+        }
+        return total;
+    }
+
+    private CouponSelection selectCoupon(Integer userId, Integer couponId, Integer userCouponId,
+                                         BigDecimal goodsPrice, List<LitemallCart> goodsList) {
+        CouponSelection best = new CouponSelection();
+        for (LitemallCouponUser couponUser : couponUserService.queryAll(userId)) {
+            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponUser.getCouponId(),
+                    couponUser.getId(), goodsPrice, goodsList);
+            if (coupon == null) {
                 continue;
             }
-
-            tmpCouponLength++;
-            if(tmpCouponPrice.compareTo(coupon.getDiscount()) == -1){
-                tmpCouponPrice = coupon.getDiscount();
-                tmpCouponId = coupon.getId();
-                tmpUserCouponId = couponUser.getId();
+            best.availableCount++;
+            if (coupon.getDiscount().compareTo(best.discount) > 0) {
+                best.discount = coupon.getDiscount();
+                best.couponId = coupon.getId();
+                best.userCouponId = couponUser.getId();
             }
         }
-        // 获取优惠券减免金额，优惠券可用数量
-        int availableCouponLength = tmpCouponLength;
-        BigDecimal couponPrice = new BigDecimal(0);
-        // 这里存在三种情况
-        // 1. 用户不想使用优惠券，则不处理
-        // 2. 用户想自动使用优惠券，则选择合适优惠券
-        // 3. 用户已选择优惠券，则测试优惠券是否合适
-        if (couponId == null || couponId.equals(-1)){
-            couponId = -1;
-            userCouponId = -1;
+        if (couponId == null || couponId.equals(-1)) {
+            return new CouponSelection(-1, -1, BigDecimal.ZERO, best.availableCount);
         }
-        else if (couponId.equals(0)) {
-            couponPrice = tmpCouponPrice;
-            couponId = tmpCouponId;
-            userCouponId = tmpUserCouponId;
+        if (couponId.equals(0)) {
+            return best;
         }
-        else {
-            LitemallCoupon coupon = couponVerifyService.checkCoupon(userId, couponId, userCouponId, checkedGoodsPrice, checkedGoodsList);
-            // 用户选择的优惠券有问题，则选择合适优惠券，否则使用用户选择的优惠券
-            if(coupon == null){
-                couponPrice = tmpCouponPrice;
-                couponId = tmpCouponId;
-                userCouponId = tmpUserCouponId;
-            }
-            else {
-                couponPrice = coupon.getDiscount();
-            }
+        LitemallCoupon selected = couponVerifyService.checkCoupon(userId, couponId, userCouponId,
+                goodsPrice, goodsList);
+        if (selected == null) {
+            return best;
         }
+        return new CouponSelection(couponId, userCouponId, selected.getDiscount(), best.availableCount);
+    }
 
-        // 根据订单商品总价计算运费，满88则免运费，否则8元；
-        BigDecimal freightPrice = new BigDecimal(0.00);
-        if (checkedGoodsPrice.compareTo(SystemConfig.getFreightLimit()) < 0) {
-            freightPrice = SystemConfig.getFreight();
+    private BigDecimal calculateFreightPrice(BigDecimal goodsPrice) {
+        if (goodsPrice.compareTo(SystemConfig.getFreightLimit()) < 0) {
+            return SystemConfig.getFreight();
         }
+        return BigDecimal.ZERO;
+    }
 
-        // 可以使用的其他钱，例如用户积分
-        BigDecimal integralPrice = new BigDecimal(0.00);
-
-        // 订单费用
-        BigDecimal orderTotalPrice = checkedGoodsPrice.add(freightPrice).subtract(couponPrice).max(new BigDecimal(0.00));
-
-        BigDecimal actualPrice = orderTotalPrice.subtract(integralPrice);
-
+    private Map<String, Object> buildCheckoutData(AddressSelection address, Integer cartId,
+                                                  Integer grouponRulesId, BigDecimal grouponPrice,
+                                                  CouponSelection coupon, BigDecimal goodsPrice,
+                                                  BigDecimal freightPrice, List<LitemallCart> goodsList) {
+        BigDecimal orderTotalPrice = goodsPrice.add(freightPrice).subtract(coupon.discount)
+                .max(BigDecimal.ZERO);
         Map<String, Object> data = new HashMap<>();
-        data.put("addressId", addressId);
-        data.put("couponId", couponId);
-        data.put("userCouponId", userCouponId);
+        data.put("addressId", address.id);
+        data.put("couponId", coupon.couponId);
+        data.put("userCouponId", coupon.userCouponId);
         data.put("cartId", cartId);
         data.put("grouponRulesId", grouponRulesId);
         data.put("grouponPrice", grouponPrice);
-        data.put("checkedAddress", checkedAddress);
-        data.put("availableCouponLength", availableCouponLength);
-        data.put("goodsTotalPrice", checkedGoodsPrice);
+        data.put("checkedAddress", address.address);
+        data.put("availableCouponLength", coupon.availableCount);
+        data.put("goodsTotalPrice", goodsPrice);
         data.put("freightPrice", freightPrice);
-        data.put("couponPrice", couponPrice);
+        data.put("couponPrice", coupon.discount);
         data.put("orderTotalPrice", orderTotalPrice);
-        data.put("actualPrice", actualPrice);
-        data.put("checkedGoodsList", checkedGoodsList);
-        return ResponseUtil.ok(data);
+        data.put("actualPrice", orderTotalPrice);
+        data.put("checkedGoodsList", goodsList);
+        return data;
     }
+
+    private static class AddressSelection {
+        private final Integer id;
+        private final LitemallAddress address;
+
+        private AddressSelection(Integer id, LitemallAddress address) {
+            this.id = id;
+            this.address = address;
+        }
+    }
+
+    private static class CouponSelection {
+        private Integer couponId = 0;
+        private Integer userCouponId = 0;
+        private BigDecimal discount = BigDecimal.ZERO;
+        private int availableCount;
+
+        private CouponSelection() {
+        }
+
+        private CouponSelection(Integer couponId, Integer userCouponId, BigDecimal discount, int availableCount) {
+            this.couponId = couponId;
+            this.userCouponId = userCouponId;
+            this.discount = discount;
+            this.availableCount = availableCount;
+        }
+    }
+
 }

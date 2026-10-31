@@ -63,6 +63,17 @@ public class JacksonUtil {
     /**
      * 只接受 JSON 整数，字符串、布尔、对象都返回 null
      */
+    public static boolean hasField(String body, String field) {
+        ObjectMapper mapper = new ObjectMapper();
+        try {
+            JsonNode node = mapper.readTree(body);
+            return node != null && node.has(field);
+        } catch (IOException e) {
+            logger.error(e.getMessage(), e);
+            return false;
+        }
+    }
+
     public static Integer parseStrictInteger(String body, String field) {
         ObjectMapper mapper = new ObjectMapper();
         try {
@@ -105,7 +116,7 @@ public class JacksonUtil {
         } catch (IOException e) {
             logger.error(e.getMessage(), e);
         }
-        return null;
+        return Boolean.FALSE;
     }
 
     public static Short parseShort(String body, String field) {
