@@ -8,6 +8,9 @@ on:
 jobs:
   gate:
     runs-on: ubuntu-latest
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
     steps:
       - uses: actions/checkout@v4
 
@@ -34,8 +37,6 @@ jobs:
 
       - name: SonarQube scan
         if: ${{ env.SONAR_TOKEN != '' }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         run: >
           mvn -B -pl litemall-db sonar:sonar
           -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }}
