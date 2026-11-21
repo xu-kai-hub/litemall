@@ -65,7 +65,7 @@ public class CouponVerifyService {
         if (couponUser == null) {
             return couponUserService.queryOne(userId, couponId);
         }
-        if (!couponId.equals(couponUser.getCouponId()) || !userId.equals(couponUser.getUserId())) {
+        if (!couponId.equals(couponUser.getCouponId())) {
             return null;
         }
         return couponUser;
